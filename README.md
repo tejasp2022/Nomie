@@ -113,7 +113,6 @@ Because Nomie’s storage is dynamic and agents use their own slot names, Nomie 
 5. Schema inference — matching by types/enums in schema.
 6. Semantic matching (embeddings) — fallback fuzzy match; returns cosine-similarity-based confidence.
 7. Human-in-loop — if confidence < threshold, agent prompts the user for confirmation or calls `requestInfo`.
-
 The SDK exposes helpers like `fetchAndResolve` which return per-field confidence scores and RBAC status so agents can decide whether to auto-apply, ask for confirmation, or request user input.
 ---
 ## Security, privacy, and consent
