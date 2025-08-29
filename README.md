@@ -1,155 +1,273 @@
 # Nomie
-Trusted, scoped memory and consent for AI agents — reusable across agents and providers
+Deploy AI agents in enterprise environments without getting fired
 
-Nomie is a dynamic memory service designed for AI agents. It allows agents to request, store, and retrieve structured user information with privacy, access control, and normalized data formats. This enables vertical agent builders to create smarter, more personalized experiences without having to reinvent user data handling.
+Nomie is contextual access control for AI agents. It lets developers build agents that can safely access user data across systems while giving enterprises the granular permission controls they need to approve deployments.
 
 ---
-## Table of Contents
 
-## Why Nomie?
-AI agents are powerful, but they often feel repetitive, fragile, or unsafe because they're stateless relative to user preferences and company policies. Nomie solves two hard problems:
+## The Problem
 
-1. Trusted memory — store and reuse user preferences and structured facts in a user-owned, auditable way.
-2. Controlled access — give agents only the minimum permissions they need, enforce scope and consent, and provide provenance/attestations for high-trust flows.
+AI agents are powerful, but enterprise deployment gets blocked by a simple question: "How do we know this agent won't access data it shouldn't?"
 
-This reduces user friction (fewer repeated questions), improves developer ergonomics (structured data + normalization), and makes enterprise deployments safer (scoped access and audit logs).
+Current solutions force a binary choice:
+- **Full access**: Agent can read everything (security team says no)
+- **No access**: Agent is useless (business team says no)
+
+Nomie solves this with **contextual permissions** that understand what an agent is trying to do, not just what data it's touching.
+
+## Why Existing Solutions Fall Short
+
+**Basic RBAC**: "This agent can read calendars" doesn't differentiate between reading your availability vs. reading confidential meeting notes.
+
+**Memory platforms**: Store preferences but can't enforce that a travel agent shouldn't see your salary data when booking flights.
+
+**Enterprise identity**: Designed for humans, not for AI agents that need task-specific, temporary access patterns.
 
 ## What Nomie Provides
-* **SSO-like developer experience** (`nomie.init`, `nomie.auth.signIn`) — a few lines of code to hook into the memory service.
-* **Discovery & capabilities** so agents can learn what Nomie exposes (preferences, bookings, entitlements, etc.).
-* **Flexible memory model**: dynamic, schema-guided, and versioned types with canonical IDs + aliases.
-* **Fetch & resolve API** that accepts a requested JSON Schema and returns structured values, confidence scores, RBAC info, and optional attestations.
-* **User-mediated** `requestInfo` flows so the service can mediate consent and produce normalized values and audit entries.
-* **Attestations & provenance** for values returned by Nomie (cryptographic signing optional) so agents can auto-apply values with confidence.
-* **RBAC / per-agent scopes** and an audit trail for reads/writes.
+
+**Intent-aware permissions**: "Book travel" gets calendar availability and hotel preferences, but not confidential meeting details or financial information.
+
+**Cross-system context**: Works across Google Workspace, Slack, CRM systems, and internal tools without requiring agents to understand each system's permission model.
+
+**Developer-friendly deployment**: Single integration that handles enterprise security requirements so developers can focus on agent functionality.
+
+**Audit and compliance**: Every permission request and data access is logged with business context, not just technical metadata.
+
 ---
-## High-level architecture
-* **Agent**: a vertical agent (e.g., travel booking) integrates the SDK and asks Nomie for fields it needs.
-* **Nomie SDK / MCP**: discovery, OAuth, and RPC calls (fetch/store/subscribe). The manifest describes capabilities and schemas.
-* **Nomie Server**: resolves keys (exact, aliases, semantic), enforces RBAC/consent, returns structured values with confidence and provenance, or mediates user requests.
-* **User**: signs in and grants scopes; Nomie mediates any interactive requests and stores normalized values for reuse.
-MCP (Model Context Protocol) or a compatible manifest approach is recommended for discovery and tool description. That gives agents a standard way to discover what memory capabilities Nomie exposes and how to call them.
----
-## Integration & SDK (examples)
-### Quick developer snippet
-A minimal integration that shows the developer experience:
-```ts
+
+## How It Works
+
+### For Agent Developers
+```typescript
 import { nomie } from "nomie-sdk";
 
-nomie.init({
-  clientId: "YOUR_APP_ID",
-  redirectUri: "https://yourapp.com/callback"
+// Initialize with your agent's capabilities
+await nomie.init({
+  agentId: "travel-booking-agent",
+  capabilities: ["calendar:availability", "user:travel-preferences", "expenses:create"]
 });
 
-// Trigger SSO-like flow (opens OAuth popup)
-await nomie.auth.signIn();
-
-// Fetch and resolve preferences before autofilling a form field
-const schema = {
-  type: "object",
-  properties: { seat_pref: { type: "string" } },
-  required: ["seat_pref"]
-};
-
-const res = await nomie.memory.fetchAndResolve(user.email, schema, {
-  agentId: "travel-agent-v1",
-  minConfidence: 0.8
+// Request access with business context
+const access = await nomie.requestAccess({
+  intent: "book_business_travel",
+  userEmail: "user@company.com", 
+  dataNeeded: {
+    calendar: "availability_only",
+    profile: "travel_preferences", 
+    expenses: "create_travel_expense"
+  }
 });
 
-if (res.rbac.allowed && res.status === "ok" && res.entries.length) {
-  form.seat = res.entries[0].value;
-  showBadge(`From Nomie — ${Math.round(res.entries[0].confidence * 100)}%`);
-} else if (!res.rbac.allowed || res.status === "rejected") {
-  // Create a mediated request that the user will see (modal, in-app card, etc.)
-  const req = await nomie.user.requestInfo(user.email, "travel-agent-v1", "What's your seat preference?", schema);
-  // show UI to open req.ui.modalUrl or button label
+if (access.granted) {
+  // Agent gets exactly what it needs, nothing more
+  const availability = await access.calendar.getAvailability("2025-01-15", "2025-01-20");
+  const preferences = await access.profile.getTravelPreferences();
+} else {
+  // Clear feedback on what's blocked and why
+  console.log(`Access denied: ${access.reason}`);
+  console.log(`Required approvals: ${access.pendingApprovals}`);
 }
 ```
-### Primary SDK functions
-* `nomie.init({ clientId, redirectUri })` — initialize SDK with app credentials.
-* `nomie.auth.signIn()` — open OAuth/OIDC flow; returns a user object on success.
-* `nomie.memory.fetchAndResolve(userId, requestedSchema, opts)` — the core read API; performs matching and RBAC checks and returns values + confidence.
-* `nomie.user.requestInfo(userId, agentId, message, requestedSchema, opts)` — create a mediated user prompt and return metadata (modal URL, requestId).
-* `nomie.memory.store(userId, payload)` — optional write API to store values (requires scopes/consent).
+
+### For Enterprise Administrators
+```yaml
+# Policy configuration
+travel_booking_agent:
+  intents:
+    book_business_travel:
+      auto_approve: true
+      permissions:
+        calendar: ["availability", "create_events"]
+        profile: ["travel_preferences", "expense_account"]
+      restrictions:
+        - no_personal_calendar_details
+        - no_salary_information
+        - require_manager_approval_over_$5000
+      audit_level: "detailed"
+```
+
 ---
-## Discovery & manifest (MCP-style)
-Nomie publishes a manifest agents can fetch. The manifest advertises capabilities, auth requirements, and schema links.
-Example (excerpt):
-```json
-{
-  "name": "nomie-memory",
-  "version": "2025-08-01",
-  "auth": {
-    "type": "oauth2",
-    "scopes": ["nomie.memory.read", "nomie.memory.write", "nomie.profile"]
-  },
-  "capabilities": [
-    {
-      "name": "preferences",
-      "schema": "https://nomie.example/schema/preferences.json",
-      "types": [
-        {
-          "id": "https://nomie.example/types/seatPreference",
-          "title": "Seat preference",
-          "aliases": ["seat_pref", "seat_preference", "seatPreference", "seat"],
-          "description": "User's seat preference on flights; enum: [Aisle, Window, Middle]",
-          "example": {"seatPreference": "Aisle"}
-        }
-      ]
-    }
-  ]
+
+## Core Architecture
+
+### Intent Engine
+Maps agent requests to specific data needs:
+- "Book travel" → calendar availability + travel preferences
+- "Schedule meeting" → calendar write + attendee contact info  
+- "Generate report" → read-only access to specified data sources
+
+### Context Broker
+Understands data relationships across systems:
+- Calendar events can contain confidential information
+- User profiles have both business and personal elements
+- Financial data requires different controls than preferences
+
+### Permission Resolver
+Translates business intent into technical permissions:
+- Temporary access tokens for specific operations
+- Scoped API calls that filter sensitive information
+- Cross-system coordination without exposing credentials
+
+---
+
+## Integration Examples
+
+### Travel Booking Agent
+**Before Nomie**: Agent needs full Google Workspace access, security team rejects deployment
+
+**With Nomie**: Agent requests "travel booking" intent, gets calendar availability and travel preferences, security team approves
+
+```typescript
+const travelAccess = await nomie.requestAccess({
+  intent: "book_business_travel",
+  duration: "2_hours", // Access expires automatically
+  auditTrail: true
+});
+
+// Agent can check availability but not read meeting contents
+const availability = await travelAccess.calendar.getAvailability();
+// Agent gets travel preferences but not personal information
+const preferences = await travelAccess.profile.getTravelPreferences();
+```
+
+### Meeting Scheduler
+**Before Nomie**: Needs contacts access, calendar write, email sending - too broad for security approval
+
+**With Nomie**: Gets exactly what it needs for scheduling, nothing more
+
+```typescript
+const scheduleAccess = await nomie.requestAccess({
+  intent: "schedule_internal_meeting",
+  participants: ["alice@company.com", "bob@company.com"],
+  constraints: {
+    timeRange: "business_hours_only",
+    duration: "max_2_hours"
+  }
+});
+```
+
+---
+
+## Security Model
+
+### Principle of Least Context
+Agents get minimum data needed for their specific task, not broad system access.
+
+### Temporal Permissions  
+Access tokens expire automatically when the task completes or after a time limit.
+
+### Intent Verification
+Every data request must map to a declared business intent that's been approved.
+
+### Audit by Default
+All access requests, approvals, and data usage logged with business context for compliance teams.
+
+### Revocation
+Instant revocation of agent access across all systems when policies change or threats detected.
+
+---
+
+## Enterprise Features
+
+### Policy Management
+- Visual policy builder for non-technical administrators
+- Template policies for common agent use cases  
+- Integration with existing identity providers and RBAC systems
+
+### Compliance Reporting
+- Detailed audit logs with business context
+- Compliance dashboard showing agent activity across systems
+- Automated reporting for security reviews
+
+### Risk Management
+- Real-time monitoring of unusual agent behavior
+- Automatic access revocation on policy violations
+- Integration with enterprise security tools (SIEM, DLP)
+
+---
+
+## Getting Started
+
+### Quick Start for Developers
+```bash
+npm install nomie-sdk
+```
+
+```typescript
+import { nomie } from "nomie-sdk";
+
+// 1. Register your agent's capabilities
+await nomie.registerAgent({
+  name: "My Business Agent",
+  intents: ["process_invoices", "schedule_meetings"],
+  dataRequirements: {
+    process_invoices: ["documents:invoices", "accounting:write"],
+    schedule_meetings: ["calendar:availability", "contacts:business"]
+  }
+});
+
+// 2. Request access for specific tasks
+const access = await nomie.requestAccess({
+  intent: "process_invoices",
+  userContext: "finance_team_member"
+});
+
+// 3. Use scoped access safely
+if (access.granted) {
+  const invoices = await access.documents.getInvoices({ status: "pending" });
+  await access.accounting.createEntries(processedInvoices);
 }
 ```
-Agents use this to:
-* Display a single “Sign in with Nomie” button and required scopes.
-* Discover what Nomie can answer and how to request it.
----
-## Field matching & resolution
-Because Nomie’s storage is dynamic and agents use their own slot names, Nomie resolves requested schema fields via a layered matching algorithm:
-1. Exact key match — highest confidence (e.g., `"seatPreference"` exists).
-2. Aliases lookup — match set by manifest aliases (`"seat_pref"`, `"seat"`).
-3. Canonical type matching — both sides map to the same canonical URI.
-4. Normalized name matching — snake_case ↔ camelCase normalization.
-5. Schema inference — matching by types/enums in schema.
-6. Semantic matching (embeddings) — fallback fuzzy match; returns cosine-similarity-based confidence.
-7. Human-in-loop — if confidence < threshold, agent prompts the user for confirmation or calls `requestInfo`.
-The SDK exposes helpers like `fetchAndResolve` which return per-field confidence scores and RBAC status so agents can decide whether to auto-apply, ask for confirmation, or request user input.
----
-## Security, privacy, and consent
-Nomie is designed around explicit consent and minimal exposure:
-* **OAuth/OIDC SSO** with fine-grained per-agent scopes (e.g., nomie.memory.read:preferences).
-* **Per-field sensitivity metadata**; sensitive fields require elevated consent and cannot be auto-applied.
-* **Audit logs**: read/write entries are logged with agentId, userId, and timestamp.
-* **Attestations**: optionally provide signed attestations for returned values so agents can safely auto-apply.
-* **Revocation**: users can revoke agent access; subsequent fetches will be rejected.
-* **TTL & data minimization**: memory entries include TTLs and can be set to expire automatically.
----
-## Key Benefits
 
-### For Agent Builders
-Why integrate through Nomie instead of simply asking users directly?
-* **Attested values**: values returned by Nomie may carry signed attestations that enable auto-apply flows; unmediated chat answers do not.
-* **Normalization**: Nomie returns structured, normalized formats (ISO dates, canonical IDs), saving developers parsing work.
-* **Cross-agent reuse**: storing values via Nomie lets other authorized agents reuse information, improving UX across apps.
-* **Trust & audit**: enterprise customers prefer auditable reads/writes and scoped access.
-* **Conversion & UX**: agents that auto-fill with high-confidence values reduce friction and increase completion rates.
+### Enterprise Setup
+1. **Connect identity systems**: Integrate with existing SSO and user directories
+2. **Define policies**: Set up approval workflows and access rules
+3. **Deploy agents**: Developers can now build agents that pass security review
+4. **Monitor and audit**: Track all agent activity through compliance dashboard
 
-### For Consumers
-* **Consent-first UX**: Users control what is shared with which agents.  
-* **Privacy-preserving memory**: Data is stored with access rules and auditable logs.  
-* **Seamless experience**: Personalized actions without repeatedly re-entering preferences.  
-* **Dynamic personalization**: Agents adapt to user preferences collected over time.
 ---
-## Demo
----
-### Contributing
-Contributions and feedback from agent builders are welcome. Helpful contributions include:
-* Example schemas for new capability types (contacts, entitlements, preferences).
-* Resolver improvements and embedding matching heuristics.
-* Security reviews and tests for RBAC and attestation flows.
-* Developer experience improvements (SDKs, quickstarts, sample apps).
 
-Please follow the repository’s contribution guidelines and include tests where appropriate.
+## Why This Approach Works
+
+### For Security Teams
+- **Granular control**: Approve specific business use cases, not broad system access
+- **Clear audit trail**: Every agent action tied to business intent and user context
+- **Risk reduction**: Agents can't accidentally access sensitive data outside their scope
+- **Compliance ready**: Built-in logging and reporting for regulatory requirements
+
+### For Developers  
+- **Faster approvals**: Security teams understand and can approve specific business use cases
+- **Simpler integration**: One SDK handles complex enterprise permission requirements
+- **Better reliability**: Clear permission boundaries prevent runtime access failures
+- **Easier debugging**: Know exactly what data your agent can and cannot access
+
+### For Business Teams
+- **Faster deployment**: Agents pass security review without months of back-and-forth
+- **Better functionality**: Agents can access the data they need to be useful
+- **Trust and adoption**: Users confident that agents follow appropriate access controls
+- **Measurable ROI**: Deploy AI agents that solve business problems without security bottlenecks
+
 ---
-### License
+
+## Competitive Advantages
+
+**vs. Memory platforms**: We don't just store preferences—we enforce contextual access across all enterprise systems
+
+**vs. Basic RBAC**: We understand business intent, not just technical permissions
+
+**vs. Enterprise identity**: Purpose-built for AI agents' unique access patterns and temporary permission needs
+
+**vs. Building in-house**: We handle the complex enterprise security requirements so you can focus on agent functionality
+
 ---
+
+## Roadmap
+
+**Q1 2025**: Core platform with Google Workspace, Slack, and Salesforce integrations  
+**Q2 2025**: Advanced policy engine with conditional access and risk scoring  
+**Q3 2025**: Multi-tenant SaaS with self-service policy management  
+**Q4 2025**: AI-powered policy recommendations and automated compliance reporting
+
+---
+
+*Deploy AI agents that enterprises actually approve*
